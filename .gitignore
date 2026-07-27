@@ -24,3 +24,5 @@ testdata/tests/*.json
 !testdata/tests/event3.jsonl
 !testdata/tests/bad_lines.jsonl
 !testdata/tests/mixed_sources.jsonl
+!testdata/tests/counting.json
+!testdata/tests/event_large.jsonl
