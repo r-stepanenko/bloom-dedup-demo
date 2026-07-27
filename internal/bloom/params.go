@@ -7,7 +7,7 @@ import (
 
 // Вычисление m и k
 func Params(n int, p float64) (int, int, error) {
-	if n < 0 {
+	if n <= 0 {
 		return 0, 0, fmt.Errorf("n не может быть меньше 0")
 	}
 	if p <= 0 || p > 1 {

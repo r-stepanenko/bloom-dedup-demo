@@ -1,13 +1,10 @@
 package bloom
 
 import (
-	"bloom-dedup-demo/internal/bitset"
 	"bloom-dedup-demo/internal/model"
 	"crypto/sha256"
 	"encoding/binary"
 	"hash/fnv"
-	"math"
-	"runtime"
 	"sort"
 	"time"
 )
@@ -15,28 +12,17 @@ import (
 // Точная дедупликация событий через map
 // Возвращает events, unique, duplicates, durationMs, memoryBytes, error
 func MapFilter(events []model.Event) ([]model.Event, int, int, int64, int, error) {
-	var m1, m2 runtime.MemStats
-	runtime.GC()
-	runtime.ReadMemStats(&m1)
 	start := time.Now()
 	total := len(events)
-	eventsMap := make(map[string]model.Event)
+	eventsMap := make(map[string]model.Event, total)
 	result := make([]model.Event, 0, total)
-	//events, _, total, _, err := model.ReadEvents(path, fs)
-	//if err != nil {
-	//	return 0, 0, 0, 0, err
-	//}
 	for i, event := range events {
 		eventsMap[event.EventHash] = events[i]
 	}
 	unique := len(eventsMap)
 	duplicates := total - unique
 	duration := time.Since(start).Milliseconds()
-	runtime.ReadMemStats(&m2)
-	memory := int(m2.TotalAlloc - m1.TotalAlloc)
-	if memory == 0 {
-		memory = estimateMapMemory(eventsMap)
-	}
+	memory := estimateMapMemory(eventsMap)
 	for _, event := range eventsMap {
 		result = append(result, event)
 	}
@@ -99,82 +85,39 @@ func getIndexesSHA256(key string, k int, m uint64) []uint64 {
 // Возвращает unique, duplicates, durationMs, memoryBytes, error
 func BloomFilter(events []model.Event, expectedItems int, hash string, p float64) (int, int, int64, int, error) {
 	start := time.Now()
-	//events, _, total, _, err2 := model.ReadEvents(path, fs)
-	//if err2 != nil {
-	//	return 0, 0, err2
-	//}
-	total := len(events)
-	m, k, err1 := Params(expectedItems, p)
-	if err1 != nil {
-		return 0, 0, 0, 0, err1
-	}
-	bs, err := bitset.New(uint(m))
+	f, err := NewFilter(expectedItems, p, hash)
 	if err != nil {
 		return 0, 0, 0, 0, err
 	}
 	duplicates := 0
-
 	for _, event := range events {
-		var indexes []uint64
-		if hash == "fnv64_double_hashing" {
-			indexes = getIndexes(event.EventHash, k, uint64(m))
-		} else {
-			indexes = getIndexesSHA256(event.EventHash, k, uint64(m))
-		}
-		alreadySet := true
-		for _, idx := range indexes {
-			if !bs.Get(uint(idx)) {
-				alreadySet = false
-			}
-			bs.Set(uint(idx))
-		}
-		if alreadySet {
+		if f.MayContain(event.EventHash) {
 			duplicates++
+		} else {
+			f.Add(event.EventHash)
 		}
 	}
-	unique := total - duplicates
+	unique := len(events) - duplicates
 	duration := time.Since(start).Milliseconds()
-	memory := (m + 7) / 8
-
-	return unique, duplicates, duration, memory, nil
+	return unique, duplicates, duration, f.MemoryBytes(), nil
 }
 
+// Фильтр Блума счётчик
+// Возвращает unique, duplicates, durationMs, memoryBytes, error
 func CountingBloomFilter(events []model.Event, expectedItems int, hash string, p float64) (int, int, int64, int, error) {
 	start := time.Now()
-	total := len(events)
-	m, k, err1 := Params(expectedItems, p)
-	if err1 != nil {
-		return 0, 0, 0, 0, err1
+	f, err := NewCountingFilter(expectedItems, p, hash)
+	if err != nil {
+		return 0, 0, 0, 0, err
 	}
-	counters := make([]uint16, m)
 	duplicates := 0
 	for _, event := range events {
-		var indexes []uint64
-		if hash == "fnv64_double_hashing" {
-			indexes = getIndexes(event.EventHash, k, uint64(m))
-		} else {
-			indexes = getIndexesSHA256(event.EventHash, k, uint64(m))
-		}
-		flag := true
-		for _, idx := range indexes {
-			if counters[idx] == 0 {
-				flag = false
-				break
-			}
-		}
-		if flag {
+		if f.MayContain(event.EventHash) {
 			duplicates++
 		}
-		for _, idx := range indexes {
-			if counters[idx] < math.MaxUint16 {
-				counters[idx]++
-			}
-		}
-
+		f.Add(event.EventHash)
 	}
-	unique := total - duplicates
+	unique := len(events) - duplicates
 	duration := time.Since(start).Milliseconds()
-	memory := len(counters) * 2
-
-	return unique, duplicates, duration, memory, nil
+	return unique, duplicates, duration, f.MemoryBytes(), nil
 }

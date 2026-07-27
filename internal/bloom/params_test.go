@@ -61,6 +61,13 @@ func TestParamsNegativeN(t *testing.T) {
 	}
 }
 
+func TestParamsZeroN(t *testing.T) {
+	_, _, err := Params(0, 0.01)
+	if err == nil {
+		t.Errorf("ожидали ошибку при n = 0")
+	}
+}
+
 func TestParamsZeroRate(t *testing.T) {
 	_, _, err := Params(1000, 0)
 	if err == nil {

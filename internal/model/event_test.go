@@ -82,3 +82,34 @@ func TestReadEventsNotStrict(t *testing.T) {
 	//	t.Errorf("Должно считаться 4 события, считалось %d", total)
 	//}
 }
+
+func TestEventValidateHash(t *testing.T) {
+	base := Event{EventID: "evt_000001", Seq: 1}
+
+	e := base
+	e.EventHash = "0123456789abcdef"
+	err := e.Validate()
+	if err != nil {
+		t.Errorf("валидный хеш не должен давать ошибку: %v", err)
+	}
+
+	e = base
+	e.EventHash = "0123456789abcdef0123456789ABCDEF"
+	err = e.Validate()
+	if err != nil {
+		t.Errorf("валидный хеш длиной 32 не должен давать ошибку: %v", err)
+	}
+
+	e = base
+	e.EventHash = "0123456789abcdeg"
+	if err := e.Validate(); err == nil {
+		t.Errorf("хеш с неправильным символом должен давать ошибку")
+	}
+
+	e = base
+	e.EventHash = "0123456789abcde"
+	err = e.Validate()
+	if err == nil {
+		t.Errorf("хеш длиной 15 должен давать ошибку")
+	}
+}
