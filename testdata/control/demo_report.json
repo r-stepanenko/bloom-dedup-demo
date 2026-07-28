@@ -8,10 +8,48 @@
  "estimated_false_positives": 0,
  "real_false_positive_rate": 0,
  "bloom_memory_bytes": 1199,
- "exact_map_memory_bytes": 6984,
+ "exact_map_memory_bytes": 2508,
  "duration_ms": 0,
  "map_duration_ms": 0,
  "bloom_duration_ms": 0,
+ "fp_table": [
+  {
+   "false_positive_rate": 0.1,
+   "m_bits": 4793,
+   "k_hashes": 3,
+   "memory_bytes": 600,
+   "bloom_may_duplicate": 8,
+   "estimated_false_positives": 0,
+   "real_false_positive_rate": 0
+  },
+  {
+   "false_positive_rate": 0.05,
+   "m_bits": 6236,
+   "k_hashes": 4,
+   "memory_bytes": 780,
+   "bloom_may_duplicate": 8,
+   "estimated_false_positives": 0,
+   "real_false_positive_rate": 0
+  },
+  {
+   "false_positive_rate": 0.01,
+   "m_bits": 9586,
+   "k_hashes": 7,
+   "memory_bytes": 1199,
+   "bloom_may_duplicate": 8,
+   "estimated_false_positives": 0,
+   "real_false_positive_rate": 0
+  },
+  {
+   "false_positive_rate": 0.001,
+   "m_bits": 14378,
+   "k_hashes": 10,
+   "memory_bytes": 1798,
+   "bloom_may_duplicate": 8,
+   "estimated_false_positives": 0,
+   "real_false_positive_rate": 0
+  }
+ ],
  "by_source": {
   "collector_01": {
    "total_records": 13,

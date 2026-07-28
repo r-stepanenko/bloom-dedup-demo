@@ -1,0 +1,6 @@
+{
+  "expected_items": 100000,
+  "false_positive_rate": 0.01,
+  "hash_family": "fnv64_double_hashing",
+  "mode": "bloom"
+}

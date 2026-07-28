@@ -37,8 +37,8 @@ func main() {
 			fmt.Fprintln(os.Stderr, "путь не может быть пустым")
 			os.Exit(1)
 		}
-		if *sourcesFlag <= 0 || *sourcesFlag > 100 {
-			fmt.Fprintln(os.Stderr, "источники должны быть от 1 до 100")
+		if *sourcesFlag <= 0 || *sourcesFlag > 99 {
+			fmt.Fprintln(os.Stderr, "источники должны быть от 1 до 99")
 			os.Exit(1)
 		}
 		//fmt.Println(*countFlag, *duplicateRatioFlag, *outFlag, *seedFlag, *sourcesFlag)
@@ -83,10 +83,20 @@ func main() {
 			os.Exit(1)
 		}
 
-		rep, err := report2.BuildReport(events, badLines, badSources, *cfg, *exactCompare)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
+		var rep *report2.Report
+		if *exactCompare {
+			rep, err = report2.BuildReport(events, badLines, badSources, *cfg, true)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+		} else {
+			var err1 error
+			rep, err1 = report2.BuildReportStreaming(*in, *sourcesBoolFlag, *cfg)
+			if err1 != nil {
+				fmt.Fprintln(os.Stderr, err1)
+				os.Exit(1)
+			}
 		}
 		err = report2.SaveJSON(*outRes, rep)
 		if err != nil {
@@ -169,13 +179,13 @@ func main() {
 		fmt.Println()
 		fmt.Printf("%-40s %-18s %-18s\n", "Метрика", "Точное сравнение", "Фильтр Блума")
 		fmt.Printf("%-40s %-18s %-18s\n", "----------------------------------------", "------------------", "------------------")
-		fmt.Printf("%-40s %-18d %-18d\n", "Уникальные", rep.ExactUnique, rep.BloomNew)
-		fmt.Printf("%-40s %-18d %-18d\n", "Дубликаты", rep.ExactDuplicates, rep.BloomMayDuplicate)
+		fmt.Printf("%-40s %-18d %-18d\n", "Уникальные", *rep.ExactUnique, rep.BloomNew)
+		fmt.Printf("%-40s %-18d %-18d\n", "Дубликаты", *rep.ExactDuplicates, rep.BloomMayDuplicate)
 		fmt.Printf("%-40s %-18d %-18d\n", "Ложные срабатывания", 0, estFP)
 		fmt.Printf("%-40s %-18.10f %-18.10f\n", "Ложное срабатывание rate", 0.0, fpRate)
-		fmt.Printf("%-40s %-18d %-18d\n", "Память, байт", rep.ExactMapMemoryBytes, rep.BloomMemoryBytes)
+		fmt.Printf("%-40s %-18d %-18d\n", "Память, байт", *rep.ExactMapMemoryBytes, rep.BloomMemoryBytes)
 		fmt.Printf("%-40s %-18.2f %-18.2f\n", "Память, Мб", exactMiB, bloomMiB)
-		fmt.Printf("%-40s %-18d %-18d\n", "Время, мс", rep.MapDurationMs, rep.BloomDurationMs)
+		fmt.Printf("%-40s %-18d %-18d\n", "Время, мс", *rep.MapDurationMs, rep.BloomDurationMs)
 		fmt.Printf("%-40s %-18.2f %-18.2f\n", "Строк в секунду", mapLinesPerSec, bloomLinesPerSec)
 		fmt.Println()
 

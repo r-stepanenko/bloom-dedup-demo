@@ -119,6 +119,11 @@ func TestBuildReportBloomWithoutMap(t *testing.T) {
 		t.Errorf("BloomNew + BloomMayDuplicate должно быть %d, получили %d + %d",
 			report.TotalRecords, report.BloomNew, report.BloomMayDuplicate)
 	}
+	for src, st := range report.BySource {
+		if st.ExactUnique != nil || st.ExactDuplicates != nil || st.EstimatedFalsePositives != nil {
+			t.Errorf("для source=%s в режиме no map поля exact должны быть null", src)
+		}
+	}
 }
 
 func TestBuildBySourceBloomWithMap(t *testing.T) {
@@ -143,7 +148,7 @@ func TestBuildBySourceBloomWithMap(t *testing.T) {
 		if st.TotalRecords <= 0 {
 			t.Errorf("для source=%s ожидали TotalRecords > 0, получили %d", src, st.TotalRecords)
 		}
-		if st.ExactUnique+st.ExactDuplicates != st.TotalRecords {
+		if *st.ExactUnique+*st.ExactDuplicates != st.TotalRecords {
 			t.Errorf("для source=%s ExactUnique + ExactDuplicates должно быть %d, получили %d + %d",
 				src, st.TotalRecords, st.ExactUnique, st.ExactDuplicates)
 		}
@@ -172,13 +177,13 @@ func TestBuildBySourceCountingBloomWithoutMap(t *testing.T) {
 		if st.TotalRecords <= 0 {
 			t.Errorf("для source=%s ожидали TotalRecords > 0, получили %d", src, st.TotalRecords)
 		}
-		if st.ExactUnique != 0 {
+		if st.ExactUnique != nil {
 			t.Errorf("для source=%s ожидали ExactUnique=0, получили %d", src, st.ExactUnique)
 		}
-		if st.ExactDuplicates != 0 {
+		if st.ExactDuplicates != nil {
 			t.Errorf("для source=%s ожидали ExactDuplicates=0, получили %d", src, st.ExactDuplicates)
 		}
-		if st.EstimatedFalsePositives != 0 {
+		if st.EstimatedFalsePositives != nil {
 			t.Errorf("для source=%s ожидали EstimatedFalsePositives=0, получили %d", src, st.EstimatedFalsePositives)
 		}
 	}
@@ -197,5 +202,39 @@ func TestUniqueStrings(t *testing.T) {
 		if s != expected[i] {
 			t.Errorf("элемент %d не совпал", i)
 		}
+	}
+}
+
+func TestBuildReportStreaming(t *testing.T) {
+	report, err := BuildReportStreaming("../../testdata/tests/event3.jsonl", true, "../../testdata/tests/bloom1.json")
+	if err != nil {
+		t.Fatalf("BuildReportStreaming вернул ошибку: %v", err)
+	}
+	if report.TotalRecords != 200 {
+		t.Errorf("ожидали TotalRecords=200, получили %d", report.TotalRecords)
+	}
+	if report.BloomNew+report.BloomMayDuplicate != report.TotalRecords {
+		t.Errorf("BloomNew + BloomMayDuplicate должно быть %d, получили %d + %d",
+			report.TotalRecords, report.BloomNew, report.BloomMayDuplicate)
+	}
+	if report.BloomMemoryBytes <= 0 {
+		t.Errorf("ожидали положительный BloomMemoryBytes, получили %d", report.BloomMemoryBytes)
+	}
+	totalBySource := 0
+	for src, st := range report.BySource {
+		totalBySource += st.TotalRecords
+		if st.ExactUnique != nil || st.ExactDuplicates != nil || st.EstimatedFalsePositives != nil {
+			t.Errorf("для source=%s в no map точные поля должны быть null", src)
+		}
+	}
+	if totalBySource != report.TotalRecords {
+		t.Errorf("сумма TotalRecords по источникам должна быть %d, получили %d", report.TotalRecords, totalBySource)
+	}
+}
+
+func TestBuildReportStreamingBadFile(t *testing.T) {
+	_, err := BuildReportStreaming("../../testdata/tests/no_file.jsonl", true, "../../testdata/tests/bloom1.json")
+	if err == nil {
+		t.Errorf("ожидали ошибку для несуществующего файла")
 	}
 }

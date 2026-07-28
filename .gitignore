@@ -26,3 +26,4 @@ testdata/tests/*.json
 !testdata/tests/mixed_sources.jsonl
 !testdata/tests/counting.json
 !testdata/tests/event_large.jsonl
+!testdata/tests/large_config.json

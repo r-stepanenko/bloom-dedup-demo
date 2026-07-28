@@ -7,14 +7,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 type SourceStats struct {
-	TotalRecords            int `json:"total_records"`
-	ExactUnique             int `json:"exact_unique"`
-	ExactDuplicates         int `json:"exact_duplicates"`
-	BloomMayDuplicate       int `json:"bloom_may_duplicate"`
-	EstimatedFalsePositives int `json:"estimated_false_positives"`
+	TotalRecords            int  `json:"total_records"`
+	ExactUnique             *int `json:"exact_unique"`
+	ExactDuplicates         *int `json:"exact_duplicates"`
+	BloomMayDuplicate       int  `json:"bloom_may_duplicate"`
+	EstimatedFalsePositives *int `json:"estimated_false_positives"`
 }
 
 type Report struct {
@@ -31,6 +32,7 @@ type Report struct {
 	DurationMs              int64                  `json:"duration_ms"`
 	MapDurationMs           *int64                 `json:"map_duration_ms"`
 	BloomDurationMs         int64                  `json:"bloom_duration_ms"`
+	FPTable                 []FPRow                `json:"fp_table"`
 	BySource                map[string]SourceStats `json:"by_source"`
 	InvalidSources          []string               `json:"invalid_sources"`
 }
@@ -57,6 +59,11 @@ func BuildReport(events []model.Event, badLines []int, badSources []string, path
 	}
 	invalid := uniqueStrings(badSources)
 
+	bS, err4 := BuildBySource(events, cfg.HashFamily, cfg.Mode, mapMode, cfg.FalsePositiveRate)
+	if err4 != nil {
+		return nil, err4
+	}
+
 	if mapMode {
 		_, exactUnique, exactDup, mapDuration, mapMemory, err1 := bloom.MapFilter(events)
 		if err1 != nil {
@@ -71,9 +78,9 @@ func BuildReport(events []model.Event, badLines []int, badSources []string, path
 			fpRate = float64(estFP) / float64(exactUnique)
 		}
 
-		bS, err4 := BuildBySource(events, cfg.HashFamily, cfg.Mode, mapMode, cfg.FalsePositiveRate)
-		if err4 != nil {
-			return nil, err4
+		fpTable, err5 := ExtraParamsFPRows(events, cfg.ExpectedItems, cfg.HashFamily, DefaultRates)
+		if err5 != nil {
+			return nil, err5
 		}
 		return &Report{
 			TotalRecords:            total,
@@ -89,32 +96,111 @@ func BuildReport(events []model.Event, badLines []int, badSources []string, path
 			DurationMs:              mapDuration + bloomDuration,
 			MapDurationMs:           &mapDuration,
 			BloomDurationMs:         bloomDuration,
-			BySource:                bS,
-			InvalidSources:          invalid,
-		}, nil
-	} else {
-		bS, err4 := BuildBySource(events, cfg.HashFamily, cfg.Mode, mapMode, cfg.FalsePositiveRate)
-		if err4 != nil {
-			return nil, err4
-		}
-		return &Report{
-			TotalRecords:            total,
-			BadLines:                len(badLines),
-			ExactUnique:             nil,
-			ExactDuplicates:         nil,
-			BloomNew:                bloomNew,
-			BloomMayDuplicate:       bloomDup,
-			EstimatedFalsePositives: nil,
-			RealFalsePositiveRate:   nil,
-			BloomMemoryBytes:        bloomMemory,
-			ExactMapMemoryBytes:     nil,
-			MapDurationMs:           nil,
-			BloomDurationMs:         bloomDuration,
-			DurationMs:              bloomDuration,
+			FPTable:                 fpTable,
 			BySource:                bS,
 			InvalidSources:          invalid,
 		}, nil
 	}
+	fpTable, err5 := ParamFPRows(cfg.ExpectedItems, DefaultRates)
+	if err5 != nil {
+		return nil, err5
+	}
+	return &Report{
+		TotalRecords:            total,
+		BadLines:                len(badLines),
+		ExactUnique:             nil,
+		ExactDuplicates:         nil,
+		BloomNew:                bloomNew,
+		BloomMayDuplicate:       bloomDup,
+		EstimatedFalsePositives: nil,
+		RealFalsePositiveRate:   nil,
+		BloomMemoryBytes:        bloomMemory,
+		ExactMapMemoryBytes:     nil,
+		MapDurationMs:           nil,
+		BloomDurationMs:         bloomDuration,
+		DurationMs:              bloomDuration,
+		FPTable:                 fpTable,
+		BySource:                bS,
+		InvalidSources:          invalid,
+	}, nil
+}
+
+// Потоковое создание отчёта без точного map
+func BuildReportStreaming(path string, fls bool, pathcfg string) (*Report, error) {
+	cfg, err := model.ReadConfig(pathcfg)
+	if err != nil {
+		return nil, err
+	}
+
+	var bf *bloom.Filter
+	var cf *bloom.CountingFilter
+	if cfg.Mode == "bloom" {
+		bf, err = bloom.NewFilter(cfg.ExpectedItems, cfg.FalsePositiveRate, cfg.HashFamily)
+	} else {
+		cf, err = bloom.NewCountingFilter(cfg.ExpectedItems, cfg.FalsePositiveRate, cfg.HashFamily)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	start := time.Now()
+	total := 0
+	bloomDup := 0
+	bySource := make(map[string]SourceStats)
+
+	badLines, badSources, err := model.StreamEvents(path, fls, func(e model.Event) {
+		total++
+
+		var mayDup bool
+		if bf != nil {
+			mayDup = bf.MayContain(e.EventHash)
+			if !mayDup {
+				bf.Add(e.EventHash)
+			}
+		} else {
+			mayDup = cf.MayContain(e.EventHash)
+			cf.Add(e.EventHash)
+		}
+		if mayDup {
+			bloomDup++
+		}
+
+		st := bySource[e.Source]
+		st.TotalRecords++
+		if mayDup {
+			st.BloomMayDuplicate++
+		}
+		bySource[e.Source] = st
+	})
+	if err != nil {
+		return nil, err
+	}
+	bloomDuration := time.Since(start).Milliseconds()
+
+	bloomMemory := 0
+	if bf != nil {
+		bloomMemory = bf.MemoryBytes()
+	} else {
+		bloomMemory = cf.MemoryBytes()
+	}
+
+	fpTable, err := ParamFPRows(cfg.ExpectedItems, DefaultRates)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Report{
+		TotalRecords:      total,
+		BadLines:          len(badLines),
+		BloomNew:          total - bloomDup,
+		BloomMayDuplicate: bloomDup,
+		BloomMemoryBytes:  bloomMemory,
+		DurationMs:        bloomDuration,
+		BloomDurationMs:   bloomDuration,
+		FPTable:           fpTable,
+		BySource:          bySource,
+		InvalidSources:    uniqueStrings(badSources),
+	}, nil
 }
 
 // Отбор уникальных невалидных источников
@@ -137,62 +223,36 @@ func BuildBySource(events []model.Event, hash string, mode string, mapMpde bool,
 	for _, e := range events {
 		grouped[e.Source] = append(grouped[e.Source], e)
 	}
-	if mapMpde {
-		for src, evs := range grouped {
-			_, exactUnique, exactDup, _, _, err1 := bloom.MapFilter(evs)
-			if err1 != nil {
-				return nil, err1
-			}
-			var bloomDup int
-			if mode == "bloom" {
-				_, bloomDup, _, _, err1 = bloom.BloomFilter(evs, len(evs), hash, fPR)
-				if err1 != nil {
-					return nil, err1
-				}
-			} else {
-				_, bloomDup, _, _, err1 = bloom.CountingBloomFilter(evs, len(evs), hash, fPR)
-				if err1 != nil {
-					return nil, err1
-				}
+	for src, evs := range grouped {
+		var bloomDup int
+		var err1 error
+		if mode == "bloom" {
+			_, bloomDup, _, _, err1 = bloom.BloomFilter(evs, len(evs), hash, fPR)
+		} else {
+			_, bloomDup, _, _, err1 = bloom.CountingBloomFilter(evs, len(evs), hash, fPR)
+		}
+		if err1 != nil {
+			return nil, err1
+		}
+
+		st := SourceStats{
+			TotalRecords:      len(evs),
+			BloomMayDuplicate: bloomDup,
+		}
+		if mapMpde {
+			_, exactUnique, exactDup, _, _, err2 := bloom.MapFilter(evs)
+			if err2 != nil {
+				return nil, err2
 			}
 			estFP := bloomDup - exactDup
 			if estFP < 0 {
 				estFP = 0
 			}
-
-			bySource[src] = SourceStats{
-				TotalRecords:            len(evs),
-				ExactUnique:             exactUnique,
-				ExactDuplicates:         exactDup,
-				BloomMayDuplicate:       bloomDup,
-				EstimatedFalsePositives: estFP,
-			}
+			st.ExactUnique = &exactUnique
+			st.ExactDuplicates = &exactDup
+			st.EstimatedFalsePositives = &estFP
 		}
-	} else {
-		for src, evs := range grouped {
-			var bloomDup int
-			if mode == "bloom" {
-				var err1 error
-				_, bloomDup, _, _, err1 = bloom.BloomFilter(evs, len(evs), hash, fPR)
-				if err1 != nil {
-					return nil, err1
-				}
-			} else {
-				var err1 error
-				_, bloomDup, _, _, err1 = bloom.CountingBloomFilter(evs, len(evs), hash, fPR)
-				if err1 != nil {
-					return nil, err1
-				}
-			}
-
-			bySource[src] = SourceStats{
-				TotalRecords:            len(evs),
-				ExactUnique:             0,
-				ExactDuplicates:         0,
-				BloomMayDuplicate:       bloomDup,
-				EstimatedFalsePositives: 0,
-			}
-		}
+		bySource[src] = st
 	}
 	return bySource, nil
 }

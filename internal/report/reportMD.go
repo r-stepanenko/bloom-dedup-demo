@@ -227,13 +227,25 @@ func SaveMarkdown(path string, report *Report) error {
 		if err := writer.WriteByte('\n'); err != nil {
 			return fmt.Errorf("ошибка записи перевода строки: %w", err)
 		}
-		if _, err := writer.WriteString("- Точное количество уникальных событий: " + strconv.Itoa(bs.ExactUnique)); err != nil {
+		bsExUn := "не измерялось"
+		if bs.ExactUnique != nil {
+			bsExUn = strconv.Itoa(*bs.ExactUnique)
+		}
+		bsExDup := "не измерялось"
+		if bs.ExactDuplicates != nil {
+			bsExDup = strconv.Itoa(*bs.ExactDuplicates)
+		}
+		bsEstFP := "не измерялось"
+		if bs.EstimatedFalsePositives != nil {
+			bsEstFP = strconv.Itoa(*bs.EstimatedFalsePositives)
+		}
+		if _, err := writer.WriteString("- Точное количество уникальных событий: " + bsExUn); err != nil {
 			return fmt.Errorf("ошибка записи строки: %w", err)
 		}
 		if err := writer.WriteByte('\n'); err != nil {
 			return fmt.Errorf("ошибка записи перевода строки: %w", err)
 		}
-		if _, err := writer.WriteString("- Точное количество дубликатов: " + strconv.Itoa(bs.ExactDuplicates)); err != nil {
+		if _, err := writer.WriteString("- Точное количество дубликатов: " + bsExDup); err != nil {
 			return fmt.Errorf("ошибка записи строки: %w", err)
 		}
 		if err := writer.WriteByte('\n'); err != nil {
@@ -245,11 +257,45 @@ func SaveMarkdown(path string, report *Report) error {
 		if err := writer.WriteByte('\n'); err != nil {
 			return fmt.Errorf("ошибка записи перевода строки: %w", err)
 		}
-		if _, err := writer.WriteString("- Число случаев, когда фильтр Блума ошибочно счёл новый элемент дублем: " + strconv.Itoa(bs.EstimatedFalsePositives)); err != nil {
+		if _, err := writer.WriteString("- Число случаев, когда фильтр Блума ошибочно счёл новый элемент дублем: " + bsEstFP); err != nil {
 			return fmt.Errorf("ошибка записи строки: %w", err)
 		}
 		if err := writer.WriteByte('\n'); err != nil {
 			return fmt.Errorf("ошибка записи перевода строки: %w", err)
+		}
+		if err := writer.WriteByte('\n'); err != nil {
+			return fmt.Errorf("ошибка записи перевода строки: %w", err)
+		}
+	}
+
+	if len(report.FPTable) > 0 {
+		_, err := writer.WriteString("## Сравнение значений false_positive_rate\n\n")
+		if err != nil {
+			return fmt.Errorf("ошибка записи строки: %w", err)
+		}
+		_, err = writer.WriteString("| p | m (бит) | k | Память (байт) | Дубли (Блум) | Ложные срабатывания | Реальный FP rate |\n" +
+			"|-----------|-----------|-----------|-----------|-----------|-----------|-----------|\n")
+		if err != nil {
+			return fmt.Errorf("ошибка записи строки: %w", err)
+		}
+		for _, row := range report.FPTable {
+			dup := "не измерялось"
+			if row.BloomMayDuplicate != nil {
+				dup = strconv.Itoa(*row.BloomMayDuplicate)
+			}
+			estFP := "не измерялось"
+			if row.EstimatedFalsePositives != nil {
+				estFP = strconv.Itoa(*row.EstimatedFalsePositives)
+			}
+			fpRate := "не измерялась"
+			if row.RealFalsePositiveRate != nil {
+				fpRate = strconv.FormatFloat(*row.RealFalsePositiveRate, 'f', 6, 64)
+			}
+			line := fmt.Sprintf("| %g | %d | %d | %d | %s | %s | %s |\n",
+				row.FalsePositiveRate, row.MBits, row.KHashes, row.MemoryBytes, dup, estFP, fpRate)
+			if _, err := writer.WriteString(line); err != nil {
+				return fmt.Errorf("ошибка записи строки: %w", err)
+			}
 		}
 		if err := writer.WriteByte('\n'); err != nil {
 			return fmt.Errorf("ошибка записи перевода строки: %w", err)
