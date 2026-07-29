@@ -77,14 +77,14 @@ func main() {
 			fmt.Fprintln(os.Stderr, "файл --report должен быть с расширением md")
 			os.Exit(1)
 		}
-		events, badLines, badSources, err := model.ReadEvents(*in, *sourcesBoolFlag)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
 
 		var rep *report2.Report
 		if *exactCompare {
+			events, badLines, badSources, err := model.ReadEvents(*in, *sourcesBoolFlag)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
 			rep, err = report2.BuildReport(events, badLines, badSources, *cfg, true)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, err)
@@ -98,7 +98,7 @@ func main() {
 				os.Exit(1)
 			}
 		}
-		err = report2.SaveJSON(*outRes, rep)
+		err := report2.SaveJSON(*outRes, rep)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
