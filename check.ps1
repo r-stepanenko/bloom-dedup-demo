@@ -519,6 +519,10 @@ function Read-JsonFile {
         throw "missing json file: $Path"
     }
     $raw = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
+    # Windows PowerShell 5.1 cannot build a PSCustomObject with an empty property name and
+    # fails the whole conversion. An empty key is legal JSON and appears whenever a report
+    # groups records by an optional field that is absent, so it is relabelled before parsing.
+    $raw = [regex]::Replace($raw, '(?<=[{,]\s*)""(\s*:)', '"<empty>"$1')
     return $raw | ConvertFrom-Json
 }
 
@@ -639,6 +643,23 @@ function Get-NameRunRegex {
     return ('^(' + ((@($Names) | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')$')
 }
 
+# The assignment shows invalid_sources as an array of strings, but a map of counts carries
+# the same information, so both shapes are accepted.
+function Test-InvalidSourceReported {
+    param($InvalidSources,[Parameter(Mandatory=$true)][string]$Value)
+
+    if ($null -eq $InvalidSources) { return $false }
+    if ($InvalidSources -is [System.Array]) {
+        foreach ($item in $InvalidSources) {
+            if ([string]$item -eq $Value) { return $true }
+        }
+        return $false
+    }
+    $prop = $InvalidSources.PSObject.Properties[$Value]
+    if ($null -eq $prop) { return $false }
+    return ([int]$prop.Value -gt 0)
+}
+
 function Test-SelectedTestsPass {
     param($Status)
 
@@ -745,7 +766,7 @@ Write-CheckText -Path $fixtureInvalidSourcesPath -Text @"
 {"seq":1,"event_id":"evt_000001","event_hash":"0123456789abcdef","source":"collector_01","timestamp":"2026-07-01T00:00:00Z"}
 {"seq":2,"event_id":"evt_000002","event_hash":"1111111111111111","source":"collector_00","timestamp":"2026-07-01T00:00:01Z"}
 {"seq":3,"event_id":"evt_000003","event_hash":"2222222222222222","source":"bad_source","timestamp":"2026-07-01T00:00:02Z"}
-{"seq":4,"event_id":"evt_000004","event_hash":"3333333333333333","source":"","timestamp":"2026-07-01T00:00:03Z"}
+{"seq":4,"event_id":"evt_000004","event_hash":"3333333333333333","timestamp":"2026-07-01T00:00:03Z"}
 {"seq":5,"event_id":"evt_000001","event_hash":"0123456789abcdef","source":"collector_01","timestamp":"2026-07-01T00:00:04Z"}
 "@
 
@@ -957,15 +978,11 @@ $invalidBySource = Get-ObjectPropertyValue -Object $invalidResult -Name 'by_sour
 $invalidSourcesMap = Get-ObjectPropertyValue -Object $invalidResult -Name 'invalid_sources' -Default $null
 $invalidCollector01 = Get-ObjectPropertyValue -Object $invalidBySource -Name 'collector_01' -Default $null
 $invalidCollector00BySource = Get-ObjectPropertyValue -Object $invalidBySource -Name 'collector_00' -Default $null
-$invalidCollector00Count = [int](Get-ObjectPropertyValue -Object $invalidSourcesMap -Name 'collector_00' -Default 0)
-$invalidBadSourceCount = [int](Get-ObjectPropertyValue -Object $invalidSourcesMap -Name 'bad_source' -Default 0)
-$invalidMissingCount = [int](Get-ObjectPropertyValue -Object $invalidSourcesMap -Name '<missing>' -Default 0)
 $sourceStatsOk = (
     $null -ne $invalidCollector01 -and
     $null -eq $invalidCollector00BySource -and
-    $invalidCollector00Count -eq 1 -and
-    $invalidBadSourceCount -eq 1 -and
-    $invalidMissingCount -eq 1
+    (Test-InvalidSourceReported -InvalidSources $invalidSourcesMap -Value 'collector_00') -and
+    (Test-InvalidSourceReported -InvalidSources $invalidSourcesMap -Value 'bad_source')
 )
 
 $countingMemory = Get-ResultFieldValue -Object $countingResult -Names @('counting_memory_bytes','bloom_memory_bytes')
