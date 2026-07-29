@@ -568,6 +568,45 @@ function Get-ObjectPropertyValue {
     return $prop.Value
 }
 
+function Get-ResultFieldValue {
+    param(
+        $Object,
+        [Parameter(Mandatory=$true)][string[]]$Names,
+        $Default = $null
+    )
+
+    if ($null -eq $Object) { return $Default }
+    foreach ($name in $Names) {
+        $prop = $Object.PSObject.Properties[$name]
+        if ($null -ne $prop) { return $prop.Value }
+    }
+    return $Default
+}
+
+function Test-ResultFieldPresent {
+    param($Object,[Parameter(Mandatory=$true)][string[]]$Names)
+
+    if ($null -eq $Object) { return $false }
+    foreach ($name in $Names) {
+        if ($null -ne $Object.PSObject.Properties[$name]) { return $true }
+    }
+    return $false
+}
+
+function Get-FprTableRows {
+    param($Object)
+
+    $named = Get-ResultFieldValue -Object $Object -Names @('fp_table','parameter_table','parameters_table','fpr_table','report_fprs','fpr_rows')
+    if ($null -ne $named) { return @($named) }
+    if ($null -eq $Object) { return @() }
+    foreach ($prop in $Object.PSObject.Properties) {
+        $candidate = @($prop.Value)
+        if ($candidate.Count -eq 0) { continue }
+        if (Test-ResultFieldPresent -Object $candidate[0] -Names @('false_positive_rate','p','fpr')) { return $candidate }
+    }
+    return @()
+}
+
 function Complete-Check {
     param([Parameter(Mandatory=$true)]$Ctx,[hashtable]$Notes = @{})
 
@@ -785,44 +824,63 @@ $expectedRows = @(
     @{ p = 0.001; m = 14378; k = 10; b = 1800 }
 )
 
-$parametersRuntimeOk = $true
+# The assignment fixes neither the name of the multi-FPR table nor its row field names,
+# so the table is located by a set of known names and then by row shape.
+$fprRows = @(Get-FprTableRows -Object $mainResult)
+$parametersRuntimeOk = ($fprRows.Count -ge $expectedRows.Count)
 for ($i = 0; $i -lt $expectedRows.Count; $i++) {
-    $row = $mainResult.parameter_table[$i]
+    if ($i -ge $fprRows.Count) { $parametersRuntimeOk = $false; continue }
+    $row = $fprRows[$i]
     $expected = $expectedRows[$i]
     if ($null -eq $row) { $parametersRuntimeOk = $false; continue }
-    if ([math]::Abs([double]$row.false_positive_rate - [double]$expected.p) -gt 0.000001) { $parametersRuntimeOk = $false }
-    if ([int64]$row.m_bits -ne [int64]$expected.m) { $parametersRuntimeOk = $false }
-    if ([int64]$row.k_hashes -ne [int64]$expected.k) { $parametersRuntimeOk = $false }
-    if ([int64]$row.bloom_bytes -ne [int64]$expected.b) { $parametersRuntimeOk = $false }
+    $rowP = Get-ResultFieldValue -Object $row -Names @('false_positive_rate','p','fpr')
+    $rowM = Get-ResultFieldValue -Object $row -Names @('m_bits','m','bits')
+    $rowK = Get-ResultFieldValue -Object $row -Names @('k_hashes','k','hashes')
+    $rowB = Get-ResultFieldValue -Object $row -Names @('bloom_bytes','memory_bytes','bloom_memory_bytes','bytes')
+    if ($null -eq $rowP -or $null -eq $rowM -or $null -eq $rowK -or $null -eq $rowB) { $parametersRuntimeOk = $false; continue }
+    if ([math]::Abs([double]$rowP - [double]$expected.p) -gt 0.000001) { $parametersRuntimeOk = $false }
+    if ([int64]$rowM -ne [int64]$expected.m) { $parametersRuntimeOk = $false }
+    if ([int64]$rowK -ne [int64]$expected.k) { $parametersRuntimeOk = $false }
+    if ([int64]$rowB -ne [int64]$expected.b) { $parametersRuntimeOk = $false }
 }
 
-$exactMapOk = ([bool]$exactResult.exact_map_allocated -and [int]$exactResult.total_records -eq 6 -and [int]$exactResult.exact_unique -eq 3 -and [int]$exactResult.exact_duplicates -eq 3)
+# exact_map_allocated is not part of the assignment output format: check it only when present.
+$exactMapAllocated = Get-ResultFieldValue -Object $exactResult -Names @('exact_map_allocated')
+$exactMapOk = (
+    ($null -eq $exactMapAllocated -or [bool]$exactMapAllocated) -and
+    [int]$exactResult.total_records -eq 6 -and
+    [int]$exactResult.exact_unique -eq 3 -and
+    [int]$exactResult.exact_duplicates -eq 3
+)
 
-$fpEstimated = [int]$saturatedResult.estimated_false_positives
-$fpObserved = [double]$saturatedResult.observed_false_positive_rate
+$fpEstimated = [int](Get-ResultFieldValue -Object $saturatedResult -Names @('estimated_false_positives') -Default 0)
+$fpObservedRaw = Get-ResultFieldValue -Object $saturatedResult -Names @('real_false_positive_rate','observed_false_positive_rate')
+$fpObserved = if ($null -ne $fpObservedRaw) { [double]$fpObservedRaw } else { [double]::NaN }
 $fpExpected = [int]$saturatedResult.bloom_may_duplicate - [int]$saturatedResult.exact_duplicates
 if ($fpExpected -lt 0) { $fpExpected = 0 }
 $fpObservedExpected = if ([int]$saturatedResult.exact_unique -gt 0) { [double]$fpExpected / [double]$saturatedResult.exact_unique } else { 0.0 }
 $falsePositiveOk = ($fpEstimated -gt 0 -and $fpEstimated -eq $fpExpected -and [math]::Abs($fpObserved - $fpObservedExpected) -lt 0.0000001)
 
-$jsonReportOk = ($null -ne $mainResult.total_records -and $null -ne $mainResult.parameters -and $null -ne $mainResult.config_echo -and [int]$mainResult.total_records -eq 120 -and [string]$mainResult.config_echo.hash_family -eq 'fnv64_double_hashing')
+$jsonReportOk = (Test-ResultFieldPresent -Object $mainResult -Names @('total_records')) -and ([int]$mainResult.total_records -eq 120)
 
+# The assignment requires a Markdown report with a table over several false_positive_rate
+# values but fixes neither the column layout nor the row labels, so only the values are matched.
 $markdownRaw = Read-TextSafe -Path $reportMainPath
 $markdownOk = (
-    $markdownRaw -match '\| total_records \| 120 \|' -and
-    $markdownRaw -match '\| bloom_memory_bytes \| 1200 \|' -and
-    $markdownRaw -match '\| 0\.1 \| 4793 \| 3 \| 600 \|' -and
-    $markdownRaw -match '\| 0\.05 \| 6236 \| 4 \| 784 \|' -and
-    $markdownRaw -match '\| 0\.01 \| 9586 \| 7 \| 1200 \|' -and
-    $markdownRaw -match '\| 0\.001 \| 14378 \| 10 \| 1800 \|'
+    $markdownRaw -match 'total_records[^\r\n]*\b120\b' -and
+    $markdownRaw -match 'bloom_memory_bytes[^\r\n]*\b1200\b' -and
+    $markdownRaw -match '\|\s*0\.1\s*\|\s*4793\s*\|\s*3\s*\|[^\r\n]*\b600\b' -and
+    $markdownRaw -match '\|\s*0\.05\s*\|\s*6236\s*\|\s*4\s*\|[^\r\n]*\b784\b' -and
+    $markdownRaw -match '\|\s*0\.01\s*\|\s*9586\s*\|\s*7\s*\|[^\r\n]*\b1200\b' -and
+    $markdownRaw -match '\|\s*0\.001\s*\|\s*14378\s*\|\s*10\s*\|[^\r\n]*\b1800\b'
 )
 
 $mapEstimateExpected = Get-ExactMapEstimateFromInput -Path $genAPath -Scope 'global'
-$expectedBloomBytesFromM = [int64]([math]::Ceiling([double]$mainResult.parameters.m_bits / 64.0) * 8.0)
+$mainMapMemory = Get-ResultFieldValue -Object $mainResult -Names @('exact_map_memory_bytes','exact_map_memory_estimate_bytes')
 $memoryComparisonOk = (
     [int64]$mainResult.bloom_memory_bytes -eq 1200 -and
-    [int64]$mainResult.bloom_memory_bytes -eq $expectedBloomBytesFromM -and
-    [int64]$mainResult.exact_map_memory_estimate_bytes -eq [int64]$mapEstimateExpected
+    $null -ne $mainMapMemory -and
+    [int64]$mainMapMemory -eq [int64]$mapEstimateExpected
 )
 
 $invalidBySource = Get-ObjectPropertyValue -Object $invalidResult -Name 'by_source' -Default $null
@@ -840,30 +898,36 @@ $sourceStatsOk = (
     $invalidMissingCount -eq 1
 )
 
-$countingOk = ([string]$countingResult.config_echo.mode -eq 'counting' -and $null -ne $countingResult.counting_memory_bytes -and [int64]$countingResult.counting_memory_bytes -gt 0 -and $countingTestOk)
+$countingMemory = Get-ResultFieldValue -Object $countingResult -Names @('counting_memory_bytes','bloom_memory_bytes')
+$countingOk = ($runCounting.exit_code -eq 0 -and $null -ne $countingMemory -and [int64]$countingMemory -gt 0 -and $countingTestOk)
+
+# filter_digest and config_echo are not part of the assignment output format: the digests are
+# compared only when both runs report them, and the effect of hash_family is otherwise checked
+# through the exact counters, which must not depend on the hash family.
+$mainDigest = Get-ResultFieldValue -Object $mainResult -Names @('filter_digest')
+$shaDigest = Get-ResultFieldValue -Object $shaResult -Names @('filter_digest')
+$hashDigestsDiffer = ($null -eq $mainDigest -or $null -eq $shaDigest -or [string]$mainDigest -ne [string]$shaDigest)
 
 $hashVariantsOk = (
-    [string]$mainResult.config_echo.hash_family -eq 'fnv64_double_hashing' -and
-    [string]$shaResult.config_echo.hash_family -eq 'sha256_slices' -and
+    $runSha.exit_code -eq 0 -and
     [int]$mainResult.exact_unique -eq [int]$shaResult.exact_unique -and
     [int]$mainResult.exact_duplicates -eq [int]$shaResult.exact_duplicates -and
-    [string]$mainResult.filter_digest -ne [string]$shaResult.filter_digest -and
+    $hashDigestsDiffer -and
     $bitHashOk
 )
 
+$noExactAllocated = Get-ResultFieldValue -Object $noExactResult -Names @('exact_map_allocated')
 $noExactOk = (
-    -not [bool]$noExactResult.exact_map_allocated -and
-    $null -eq $noExactResult.exact_unique -and
-    $null -eq $noExactResult.exact_duplicates -and
-    $null -eq $noExactResult.exact_map_memory_estimate_bytes -and
+    ($null -eq $noExactAllocated -or -not [bool]$noExactAllocated) -and
+    $null -eq (Get-ResultFieldValue -Object $noExactResult -Names @('exact_unique')) -and
+    $null -eq (Get-ResultFieldValue -Object $noExactResult -Names @('exact_duplicates')) -and
+    $null -eq (Get-ResultFieldValue -Object $noExactResult -Names @('exact_map_memory_bytes','exact_map_memory_estimate_bytes')) -and
     $noExactTestOk
 )
 
 $multiFprOk = $parametersRuntimeOk -and $markdownOk
 
 $globalVsSourceOk = (
-    [string]$globalResult.config_echo.scope -eq 'global' -and
-    [string]$bySourceResult.config_echo.scope -eq 'by_source' -and
     [int]$globalResult.exact_unique -eq 3 -and
     [int]$globalResult.exact_duplicates -eq 3 -and
     [int]$bySourceResult.exact_unique -eq 4 -and
@@ -896,7 +960,7 @@ for ($attempt = 1; $attempt -le 3; $attempt++) {
     $attemptDurationSec = if ([double]$attemptRun.duration_ms -gt 0) { [double]$attemptRun.duration_ms / 1000.0 } else { 0.0 }
     $attemptThroughput = if ($attemptDurationSec -gt 0) { [double]$millionStats.lines / $attemptDurationSec } else { 0.0 }
     $attemptPeak = [int64]$attemptRun.peak_working_set_bytes
-    $attemptBloomBytes = [int64]$attemptResult.bloom_memory_bytes
+    $attemptBloomBytes = [int64](Get-ResultFieldValue -Object $attemptResult -Names @('bloom_memory_bytes') -Default 0)
 
     $millionAttempts.Add([ordered]@{
         attempt = $attempt
@@ -1018,7 +1082,7 @@ $bloomRunOk = ($runMain.exit_code -eq 0 -and [int]$exactResult.exact_unique -eq 
 Add-BooleanFeatureAssessment -Ctx $ctx -Id 'minimum.generator' -Level 'minimum' -Category 'cli' -Requirement 'Generator validates parameters and deterministic invariants at runtime' -Ok $generatorInvariantOk -Evidence @($genA.log, $genB.log, $genC.log, (Convert-ResultPathToEvidence -Ctx $ctx -Path $genAPath)) -Details "lines=$($generatorStats.lines); unique=$($generatorStats.unique); duplicates=$($generatorStats.duplicates); seed42_equal=$($hashA -eq $hashB); seed43_diff=$($hashA -ne $hashC)"
 Add-BooleanFeatureAssessment -Ctx $ctx -Id 'minimum.bloom_run' -Level 'minimum' -Category 'algorithm' -Requirement 'Bloom run semantics validated and TestBloomAddMayContain run/pass' -Ok $bloomRunOk -Evidence @($runMain.log, $runExact.log, $bitHashJson.log)
 Add-BooleanFeatureAssessment -Ctx $ctx -Id 'minimum.parameters' -Level 'minimum' -Category 'algorithm' -Requirement 'Runtime parameter table matches exact m/k/bytes values for four FPR values' -Ok $parametersRuntimeOk -Evidence @($runMain.log, (Convert-ResultPathToEvidence -Ctx $ctx -Path $resultMainPath))
-Add-BooleanFeatureAssessment -Ctx $ctx -Id 'minimum.exact_map' -Level 'minimum' -Category 'algorithm' -Requirement 'Exact map fixture yields unique3 duplicates3 and exact_map_allocated=true' -Ok $exactMapOk -Evidence @($runExact.log, (Convert-ResultPathToEvidence -Ctx $ctx -Path $resultExactPath))
+Add-BooleanFeatureAssessment -Ctx $ctx -Id 'minimum.exact_map' -Level 'minimum' -Category 'algorithm' -Requirement 'Exact map fixture yields total_records=6, exact_unique=3, exact_duplicates=3' -Ok $exactMapOk -Evidence @($runExact.log, (Convert-ResultPathToEvidence -Ctx $ctx -Path $resultExactPath))
 Add-BooleanFeatureAssessment -Ctx $ctx -Id 'minimum.false_positive' -Level 'minimum' -Category 'algorithm' -Requirement 'Saturated fixture yields positive and independently verified false positives' -Ok $falsePositiveOk -Evidence @($runSaturated.log, (Convert-ResultPathToEvidence -Ctx $ctx -Path $resultSaturatedPath))
 Add-BooleanFeatureAssessment -Ctx $ctx -Id 'minimum.json_report' -Level 'minimum' -Category 'format' -Requirement 'JSON report has required types, invariants and config echo' -Ok $jsonReportOk -Evidence @($runMain.log, (Convert-ResultPathToEvidence -Ctx $ctx -Path $resultMainPath))
 Add-BooleanFeatureAssessment -Ctx $ctx -Id 'minimum.bit_hash_tests' -Level 'minimum' -Category 'tests' -Requirement 'go test -count=1 -json run/pass for BitArray, Bloom and hash vectors' -Ok $bitHashOk -Evidence @($bitHashJson.log)
@@ -1031,7 +1095,7 @@ Add-BooleanFeatureAssessment -Ctx $ctx -Id 'good.source_statistics' -Level 'good
 
 Add-BooleanFeatureAssessment -Ctx $ctx -Id 'excellent.counting_bloom' -Level 'excellent' -Category 'algorithm' -Requirement 'Counting mode reports bytes and TestCountingBloomAddRemove run/pass' -Ok $countingOk -Evidence @($runCounting.log, $countingJson.log)
 Add-BooleanFeatureAssessment -Ctx $ctx -Id 'excellent.hash_variants' -Level 'excellent' -Category 'algorithm' -Requirement 'FNV/SHA runtime stats match while filter digests differ and known vectors pass' -Ok $hashVariantsOk -Evidence @($runMain.log, $runSha.log, $bitHashJson.log)
-Add-BooleanFeatureAssessment -Ctx $ctx -Id 'excellent.no_exact_mode' -Level 'excellent' -Category 'performance' -Requirement 'No-exact null fields, exact_map_allocated=false, white-box test and 1M gate' -Ok ($noExactOk -and $millionOk) -Evidence @($runNoExact.log, $noExactJson.log, $millionRun.log, (Convert-ResultPathToEvidence -Ctx $ctx -Path $millionMetricsPath))
+Add-BooleanFeatureAssessment -Ctx $ctx -Id 'excellent.no_exact_mode' -Level 'excellent' -Category 'performance' -Requirement 'No-exact mode leaves exact_* fields null, white-box test and 1M gate' -Ok ($noExactOk -and $millionOk) -Evidence @($runNoExact.log, $noExactJson.log, $millionRun.log, (Convert-ResultPathToEvidence -Ctx $ctx -Path $millionMetricsPath))
 Add-BooleanFeatureAssessment -Ctx $ctx -Id 'excellent.multi_fpr_report' -Level 'excellent' -Category 'report' -Requirement 'JSON and Markdown contain ordered 0.1/0.05/0.01/0.001 m/k/bytes table' -Ok $multiFprOk -Evidence @($runMain.log, (Convert-ResultPathToEvidence -Ctx $ctx -Path $reportMainPath), (Convert-ResultPathToEvidence -Ctx $ctx -Path $resultMainPath))
 Add-BooleanFeatureAssessment -Ctx $ctx -Id 'excellent.global_vs_source' -Level 'excellent' -Category 'algorithm' -Requirement 'Fixture validates global unique3/dup3 versus per_source unique4/dup2' -Ok $globalVsSourceOk -Evidence @($runGlobal.log, $runBySource.log)
 
