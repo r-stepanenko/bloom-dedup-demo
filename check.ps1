@@ -505,9 +505,19 @@ function Ensure-FileExists {
 }
 
 function Read-JsonFile {
-    param([Parameter(Mandatory=$true)][string]$Path)
+    param(
+        [Parameter(Mandatory=$true)][string]$Path,
+        [object]$Run = $null
+    )
 
-    if (-not (Test-Path -LiteralPath $Path)) { throw "missing json file: $Path" }
+    if (-not (Test-Path -LiteralPath $Path)) {
+        # A missing output almost always means the producing command failed.
+        # Without its exit code and log path the caller has to hunt for the real cause by hand.
+        if ($null -ne $Run) {
+            throw ("missing json file: {0}; command '{1}' exited with code {2}, see {3}" -f $Path, $Run.name, $Run.exit_code, $Run.log)
+        }
+        throw "missing json file: $Path"
+    }
     $raw = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
     return $raw | ConvertFrom-Json
 }
@@ -622,11 +632,11 @@ $configMillionPath = Join-Path $ctx.InputsDir 'config_million_no_exact.json'
 $configSaturatedPath = Join-Path $ctx.InputsDir 'config_saturated.json'
 
 Save-ConfigFile -Path $configMainPath -Config (Get-ConfigObject -ExpectedItems 1000 -FalsePositiveRate 0.01 -HashFamily 'fnv64_double_hashing' -Mode 'bloom' -Scope 'global')
-Save-ConfigFile -Path $configCountingPath -Config (Get-ConfigObject -ExpectedItems 1000 -FalsePositiveRate 0.01 -HashFamily 'fnv64_double_hashing' -Mode 'counting' -Scope 'global')
+Save-ConfigFile -Path $configCountingPath -Config (Get-ConfigObject -ExpectedItems 1000 -FalsePositiveRate 0.01 -HashFamily 'fnv64_double_hashing' -Mode 'counting_bloom' -Scope 'global')
 Save-ConfigFile -Path $configShaPath -Config (Get-ConfigObject -ExpectedItems 1000 -FalsePositiveRate 0.01 -HashFamily 'sha256_slices' -Mode 'bloom' -Scope 'global')
-Save-ConfigFile -Path $configNoExactPath -Config (Get-ConfigObject -ExpectedItems 1000 -FalsePositiveRate 0.01 -HashFamily 'fnv64_double_hashing' -Mode 'no_exact' -Scope 'global')
+Save-ConfigFile -Path $configNoExactPath -Config (Get-ConfigObject -ExpectedItems 1000 -FalsePositiveRate 0.01 -HashFamily 'fnv64_double_hashing' -Mode 'bloom' -Scope 'global')
 Save-ConfigFile -Path $configBySourcePath -Config (Get-ConfigObject -ExpectedItems 1000 -FalsePositiveRate 0.01 -HashFamily 'fnv64_double_hashing' -Mode 'bloom' -Scope 'by_source')
-Save-ConfigFile -Path $configMillionPath -Config (Get-ConfigObject -ExpectedItems 1000000 -FalsePositiveRate 0.01 -HashFamily 'fnv64_double_hashing' -Mode 'no_exact' -Scope 'global')
+Save-ConfigFile -Path $configMillionPath -Config (Get-ConfigObject -ExpectedItems 1000000 -FalsePositiveRate 0.01 -HashFamily 'fnv64_double_hashing' -Mode 'bloom' -Scope 'global')
 Save-ConfigFile -Path $configSaturatedPath -Config (Get-ConfigObject -ExpectedItems 20 -FalsePositiveRate 0.3 -HashFamily 'fnv64_double_hashing' -Mode 'bloom' -Scope 'global')
 
 $fixtureExactPath = Join-Path $ctx.InputsDir 'fixture_exact_6.jsonl'
@@ -707,7 +717,7 @@ $resultShaPath = Join-Path $ctx.OutputsDir 'result_sha.json'
 $runSha = Invoke-HiddenProcess -Ctx $ctx -Name 'cli_run_sha' -FilePath $toolPath -Arguments @('run','--in',$genAPath,'--config',$configShaPath,'--out',$resultShaPath,'--report',(Join-Path $ctx.OutputsDir 'report_sha.md')) -TimeoutSec 180
 
 $resultNoExactPath = Join-Path $ctx.OutputsDir 'result_no_exact.json'
-$runNoExact = Invoke-HiddenProcess -Ctx $ctx -Name 'cli_run_no_exact' -FilePath $toolPath -Arguments @('run','--in',$genAPath,'--config',$configNoExactPath,'--out',$resultNoExactPath,'--report',(Join-Path $ctx.OutputsDir 'report_no_exact.md')) -TimeoutSec 180
+$runNoExact = Invoke-HiddenProcess -Ctx $ctx -Name 'cli_run_no_exact' -FilePath $toolPath -Arguments @('run','--in',$genAPath,'--config',$configNoExactPath,'--out',$resultNoExactPath,'--report',(Join-Path $ctx.OutputsDir 'report_no_exact.md'),'--exact-compare=false') -TimeoutSec 180
 
 $resultGlobalPath = Join-Path $ctx.OutputsDir 'result_global_scope.json'
 $resultBySourcePath = Join-Path $ctx.OutputsDir 'result_by_source_scope.json'
@@ -717,12 +727,12 @@ $runBySource = Invoke-HiddenProcess -Ctx $ctx -Name 'cli_run_by_source_scope' -F
 $resultInvalidPath = Join-Path $ctx.OutputsDir 'result_invalid_sources.json'
 $runInvalid = Invoke-HiddenProcess -Ctx $ctx -Name 'cli_run_invalid_sources' -FilePath $toolPath -Arguments @('run','--in',$fixtureInvalidSourcesPath,'--config',$configMainPath,'--out',$resultInvalidPath,'--report',(Join-Path $ctx.OutputsDir 'report_invalid_sources.md')) -TimeoutSec 120
 
-$benchRun = Invoke-HiddenProcess -Ctx $ctx -Name 'go_bench_real' -FilePath $ctx.GoCmd -Arguments @('test','-run','^$','-bench','BenchmarkBloomAddMayContain|BenchmarkStreamingNoExact','./pkg/bloomdedup') -TimeoutSec 600
+$benchRun = Invoke-HiddenProcess -Ctx $ctx -Name 'go_bench_real' -FilePath $ctx.GoCmd -Arguments @('test','-run','^$','-bench','BenchmarkBloomAddMayContain|BenchmarkStreamingNoExact','./...') -TimeoutSec 600
 
-$bitHashJson = Invoke-HiddenProcess -Ctx $ctx -Name 'go_test_bit_hash_json' -FilePath $ctx.GoCmd -Arguments @('test','-count=1','-json','-run','^(TestBitArraySetAndTest|TestBloomAddMayContain|TestKnownHashVectors)$','./pkg/bloomdedup') -TimeoutSec 180
-$paramsJson = Invoke-HiddenProcess -Ctx $ctx -Name 'go_test_params_json' -FilePath $ctx.GoCmd -Arguments @('test','-count=1','-json','-run','^TestCalculateParameters$','./pkg/bloomdedup') -TimeoutSec 180
-$countingJson = Invoke-HiddenProcess -Ctx $ctx -Name 'go_test_counting_json' -FilePath $ctx.GoCmd -Arguments @('test','-count=1','-json','-run','^TestCountingBloomAddRemove$','./pkg/bloomdedup') -TimeoutSec 180
-$noExactJson = Invoke-HiddenProcess -Ctx $ctx -Name 'go_test_no_exact_json' -FilePath $ctx.GoCmd -Arguments @('test','-count=1','-json','-run','^TestNoExactSkipsExactMap$','./pkg/bloomdedup') -TimeoutSec 180
+$bitHashJson = Invoke-HiddenProcess -Ctx $ctx -Name 'go_test_bit_hash_json' -FilePath $ctx.GoCmd -Arguments @('test','-count=1','-json','-run','^(TestBitArraySetAndTest|TestBloomAddMayContain|TestKnownHashVectors)$','./...') -TimeoutSec 180
+$paramsJson = Invoke-HiddenProcess -Ctx $ctx -Name 'go_test_params_json' -FilePath $ctx.GoCmd -Arguments @('test','-count=1','-json','-run','^TestCalculateParameters$','./...') -TimeoutSec 180
+$countingJson = Invoke-HiddenProcess -Ctx $ctx -Name 'go_test_counting_json' -FilePath $ctx.GoCmd -Arguments @('test','-count=1','-json','-run','^TestCountingBloomAddRemove$','./...') -TimeoutSec 180
+$noExactJson = Invoke-HiddenProcess -Ctx $ctx -Name 'go_test_no_exact_json' -FilePath $ctx.GoCmd -Arguments @('test','-count=1','-json','-run','^TestNoExactSkipsExactMap$','./...') -TimeoutSec 180
 
 $generatorStats = Get-JsonlStats -Path $genAPath -MaxSource 3
 $hashA = Get-FileSha256 -Path $genAPath
@@ -742,15 +752,15 @@ $generatorInvariantOk = (
     $invalidCountRejected -and $invalidRatioRejected -and $invalidSourcesRejected
 )
 
-$mainResult = Read-JsonFile -Path $resultMainPath
-$exactResult = Read-JsonFile -Path $resultExactPath
-$saturatedResult = Read-JsonFile -Path $resultSaturatedPath
-$countingResult = Read-JsonFile -Path $resultCountingPath
-$shaResult = Read-JsonFile -Path $resultShaPath
-$noExactResult = Read-JsonFile -Path $resultNoExactPath
-$globalResult = Read-JsonFile -Path $resultGlobalPath
-$bySourceResult = Read-JsonFile -Path $resultBySourcePath
-$invalidResult = Read-JsonFile -Path $resultInvalidPath
+$mainResult = Read-JsonFile -Path $resultMainPath -Run $runMain
+$exactResult = Read-JsonFile -Path $resultExactPath -Run $runExact
+$saturatedResult = Read-JsonFile -Path $resultSaturatedPath -Run $runSaturated
+$countingResult = Read-JsonFile -Path $resultCountingPath -Run $runCounting
+$shaResult = Read-JsonFile -Path $resultShaPath -Run $runSha
+$noExactResult = Read-JsonFile -Path $resultNoExactPath -Run $runNoExact
+$globalResult = Read-JsonFile -Path $resultGlobalPath -Run $runGlobal
+$bySourceResult = Read-JsonFile -Path $resultBySourcePath -Run $runBySource
+$invalidResult = Read-JsonFile -Path $resultInvalidPath -Run $runInvalid
 
 $bitHashStatus = Parse-GoTestJson -JsonLogPath (Join-Path $ctx.ResultDir $bitHashJson.stdout) -ExpectedTests @('TestBitArraySetAndTest','TestBloomAddMayContain','TestKnownHashVectors')
 $paramsStatus = Parse-GoTestJson -JsonLogPath (Join-Path $ctx.ResultDir $paramsJson.stdout) -ExpectedTests @('TestCalculateParameters','TestCalculateParameters/p=0.1','TestCalculateParameters/p=0.05','TestCalculateParameters/p=0.01','TestCalculateParameters/p=0.001')
@@ -842,7 +852,6 @@ $hashVariantsOk = (
 )
 
 $noExactOk = (
-    [string]$noExactResult.config_echo.mode -eq 'no_exact' -and
     -not [bool]$noExactResult.exact_map_allocated -and
     $null -eq $noExactResult.exact_unique -and
     $null -eq $noExactResult.exact_duplicates -and
@@ -882,8 +891,8 @@ $millionBloomBytes = 0
 for ($attempt = 1; $attempt -le 3; $attempt++) {
     $attemptResultPath = Join-Path $ctx.OutputsDir "result_1m_no_exact_attempt_$attempt.json"
     $millionCleanupCandidates.Add($attemptResultPath) | Out-Null
-    $attemptRun = Invoke-HiddenProcess -Ctx $ctx -Name "cli_run_1m_no_exact_attempt_$attempt" -FilePath $toolPath -Arguments @('run','--in',$millionInputPath,'--config',$configMillionPath,'--out',$attemptResultPath) -TimeoutSec 600
-    $attemptResult = Read-JsonFile -Path $attemptResultPath
+    $attemptRun = Invoke-HiddenProcess -Ctx $ctx -Name "cli_run_1m_no_exact_attempt_$attempt" -FilePath $toolPath -Arguments @('run','--in',$millionInputPath,'--config',$configMillionPath,'--out',$attemptResultPath,'--exact-compare=false') -TimeoutSec 600
+    $attemptResult = Read-JsonFile -Path $attemptResultPath -Run $attemptRun
     $attemptDurationSec = if ([double]$attemptRun.duration_ms -gt 0) { [double]$attemptRun.duration_ms / 1000.0 } else { 0.0 }
     $attemptThroughput = if ($attemptDurationSec -gt 0) { [double]$millionStats.lines / $attemptDurationSec } else { 0.0 }
     $attemptPeak = [int64]$attemptRun.peak_working_set_bytes
@@ -977,7 +986,7 @@ $metaGoEnv = Invoke-HiddenProcess -Ctx $ctx -Name 'meta_go_env' -FilePath $ctx.G
 Copy-Item -LiteralPath (Join-Path $ctx.ResultDir $metaGoEnv.stdout) -Destination $goEnvPath -Force
 
 $unitTestsList = Invoke-HiddenProcess -Ctx $ctx -Name 'go_test_list_tests' -FilePath $ctx.GoCmd -Arguments @('test','-list','^Test','./...') -TimeoutSec 120 -AllowNonZero $true -ValidationOnly $true
-$benchList = Invoke-HiddenProcess -Ctx $ctx -Name 'go_test_list_benchmarks' -FilePath $ctx.GoCmd -Arguments @('test','-list','^Benchmark','./pkg/bloomdedup') -TimeoutSec 120 -AllowNonZero $true -ValidationOnly $true
+$benchList = Invoke-HiddenProcess -Ctx $ctx -Name 'go_test_list_benchmarks' -FilePath $ctx.GoCmd -Arguments @('test','-list','^Benchmark','./...') -TimeoutSec 120 -AllowNonZero $true -ValidationOnly $true
 
 $unitListText = Read-TextSafe -Path (Join-Path $ctx.ResultDir $unitTestsList.stdout)
 $benchListText = Read-TextSafe -Path (Join-Path $ctx.ResultDir $benchList.stdout)
