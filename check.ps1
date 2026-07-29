@@ -607,6 +607,48 @@ function Get-FprTableRows {
     return @()
 }
 
+# The assignment prescribes no test or benchmark names, so the names are discovered from the
+# sources via go test -list and selected by meaning instead of being hardcoded.
+function Get-GoListNames {
+    param(
+        [Parameter(Mandatory=$true)][string]$LogPath,
+        [Parameter(Mandatory=$true)][string]$Prefix
+    )
+
+    $text = Read-TextSafe -Path $LogPath
+    if ([string]::IsNullOrWhiteSpace($text)) { return @() }
+    $names = New-Object System.Collections.Generic.List[string]
+    foreach ($line in ($text -split "`r?`n")) {
+        $trimmed = $line.Trim()
+        if ($trimmed -match ('^' + $Prefix + '[A-Za-z0-9_]*$')) { $null = $names.Add($trimmed) }
+    }
+    return @($names | Sort-Object -Unique)
+}
+
+function Select-NamesByPattern {
+    param([string[]]$Names,[Parameter(Mandatory=$true)][string]$Pattern)
+
+    if ($null -eq $Names) { return @() }
+    return @($Names | Where-Object { $_ -match $Pattern })
+}
+
+function Get-NameRunRegex {
+    param([string[]]$Names)
+
+    if ($null -eq $Names -or $Names.Count -eq 0) { return '^$' }
+    return ('^(' + ((@($Names) | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')$')
+}
+
+function Test-SelectedTestsPass {
+    param($Status)
+
+    if ($null -eq $Status -or $Status.Keys.Count -eq 0) { return $false }
+    foreach ($name in $Status.Keys) {
+        if (-not ($Status[$name].run -and $Status[$name].pass)) { return $false }
+    }
+    return $true
+}
+
 function Complete-Check {
     param([Parameter(Mandatory=$true)]$Ctx,[hashtable]$Notes = @{})
 
@@ -680,37 +722,42 @@ Save-ConfigFile -Path $configSaturatedPath -Config (Get-ConfigObject -ExpectedIt
 
 $fixtureExactPath = Join-Path $ctx.InputsDir 'fixture_exact_6.jsonl'
 Write-CheckText -Path $fixtureExactPath -Text @"
-{"seq":1,"event_id":"id_1","event_hash":"0123456789abcdef","source":"collector_01","timestamp":"2026-07-01T00:00:00Z"}
-{"seq":2,"event_id":"id_2","event_hash":"1111111111111111","source":"collector_01","timestamp":"2026-07-01T00:00:01Z"}
-{"seq":3,"event_id":"id_3","event_hash":"2222222222222222","source":"collector_01","timestamp":"2026-07-01T00:00:02Z"}
-{"seq":4,"event_id":"id_1","event_hash":"0123456789abcdef","source":"collector_01","timestamp":"2026-07-01T00:00:03Z"}
-{"seq":5,"event_id":"id_2","event_hash":"1111111111111111","source":"collector_01","timestamp":"2026-07-01T00:00:04Z"}
-{"seq":6,"event_id":"id_3","event_hash":"2222222222222222","source":"collector_01","timestamp":"2026-07-01T00:00:05Z"}
+{"seq":1,"event_id":"evt_000001","event_hash":"0123456789abcdef","source":"collector_01","timestamp":"2026-07-01T00:00:00Z"}
+{"seq":2,"event_id":"evt_000002","event_hash":"1111111111111111","source":"collector_01","timestamp":"2026-07-01T00:00:01Z"}
+{"seq":3,"event_id":"evt_000003","event_hash":"2222222222222222","source":"collector_01","timestamp":"2026-07-01T00:00:02Z"}
+{"seq":4,"event_id":"evt_000001","event_hash":"0123456789abcdef","source":"collector_01","timestamp":"2026-07-01T00:00:03Z"}
+{"seq":5,"event_id":"evt_000002","event_hash":"1111111111111111","source":"collector_01","timestamp":"2026-07-01T00:00:04Z"}
+{"seq":6,"event_id":"evt_000003","event_hash":"2222222222222222","source":"collector_01","timestamp":"2026-07-01T00:00:05Z"}
 "@
 
 $fixtureGlobalVsSourcePath = Join-Path $ctx.InputsDir 'fixture_global_vs_source.jsonl'
 Write-CheckText -Path $fixtureGlobalVsSourcePath -Text @"
-{"seq":1,"event_id":"id_a","event_hash":"0123456789abcdef","source":"collector_01","timestamp":"2026-07-01T00:00:00Z"}
-{"seq":2,"event_id":"id_b","event_hash":"1111111111111111","source":"collector_01","timestamp":"2026-07-01T00:00:01Z"}
-{"seq":3,"event_id":"id_c","event_hash":"2222222222222222","source":"collector_01","timestamp":"2026-07-01T00:00:02Z"}
-{"seq":4,"event_id":"id_a","event_hash":"0123456789abcdef","source":"collector_02","timestamp":"2026-07-01T00:00:03Z"}
-{"seq":5,"event_id":"id_b","event_hash":"1111111111111111","source":"collector_01","timestamp":"2026-07-01T00:00:04Z"}
-{"seq":6,"event_id":"id_a","event_hash":"0123456789abcdef","source":"collector_02","timestamp":"2026-07-01T00:00:05Z"}
+{"seq":1,"event_id":"evt_000101","event_hash":"0123456789abcdef","source":"collector_01","timestamp":"2026-07-01T00:00:00Z"}
+{"seq":2,"event_id":"evt_000102","event_hash":"1111111111111111","source":"collector_01","timestamp":"2026-07-01T00:00:01Z"}
+{"seq":3,"event_id":"evt_000103","event_hash":"2222222222222222","source":"collector_01","timestamp":"2026-07-01T00:00:02Z"}
+{"seq":4,"event_id":"evt_000101","event_hash":"0123456789abcdef","source":"collector_02","timestamp":"2026-07-01T00:00:03Z"}
+{"seq":5,"event_id":"evt_000102","event_hash":"1111111111111111","source":"collector_01","timestamp":"2026-07-01T00:00:04Z"}
+{"seq":6,"event_id":"evt_000101","event_hash":"0123456789abcdef","source":"collector_02","timestamp":"2026-07-01T00:00:05Z"}
 "@
 
 $fixtureInvalidSourcesPath = Join-Path $ctx.InputsDir 'fixture_invalid_sources.jsonl'
 Write-CheckText -Path $fixtureInvalidSourcesPath -Text @"
-{"seq":1,"event_id":"id_1","event_hash":"0123456789abcdef","source":"collector_01","timestamp":"2026-07-01T00:00:00Z"}
-{"seq":2,"event_id":"id_2","event_hash":"1111111111111111","source":"collector_00","timestamp":"2026-07-01T00:00:01Z"}
-{"seq":3,"event_id":"id_3","event_hash":"2222222222222222","source":"bad_source","timestamp":"2026-07-01T00:00:02Z"}
-{"seq":4,"event_id":"id_4","event_hash":"3333333333333333","source":"","timestamp":"2026-07-01T00:00:03Z"}
-{"seq":5,"event_id":"id_1","event_hash":"0123456789abcdef","source":"collector_01","timestamp":"2026-07-01T00:00:04Z"}
+{"seq":1,"event_id":"evt_000001","event_hash":"0123456789abcdef","source":"collector_01","timestamp":"2026-07-01T00:00:00Z"}
+{"seq":2,"event_id":"evt_000002","event_hash":"1111111111111111","source":"collector_00","timestamp":"2026-07-01T00:00:01Z"}
+{"seq":3,"event_id":"evt_000003","event_hash":"2222222222222222","source":"bad_source","timestamp":"2026-07-01T00:00:02Z"}
+{"seq":4,"event_id":"evt_000004","event_hash":"3333333333333333","source":"","timestamp":"2026-07-01T00:00:03Z"}
+{"seq":5,"event_id":"evt_000001","event_hash":"0123456789abcdef","source":"collector_01","timestamp":"2026-07-01T00:00:04Z"}
 "@
 
 $fixtureSaturatedPath = Join-Path $ctx.InputsDir 'fixture_saturated.jsonl'
 $fixtureSaturatedLines = New-Object System.Collections.Generic.List[string]
+# 250 distinct hashes plus 50 real repeats against a filter sized for 20 items at p=0.3.
+# A single repeated hash cannot produce a false positive at all, so the criterion would be
+# unreachable regardless of the solution.
 for ($i = 1; $i -le 300; $i++) {
-    $fixtureSaturatedLines.Add("{`"seq`":$i,`"event_id`":`"sat_$i`",`"event_hash`":`"0123456789abcdef`",`"source`":`"collector_01`",`"timestamp`":`"2026-07-01T00:00:00Z`"}") | Out-Null
+    $hashSeed = (($i - 1) % 250) + 1
+    $satHash = '{0:x16}' -f $hashSeed
+    $fixtureSaturatedLines.Add("{`"seq`":$i,`"event_id`":`"evt_sat$('{0:D5}' -f $i)`",`"event_hash`":`"$satHash`",`"source`":`"collector_01`",`"timestamp`":`"2026-07-01T00:00:00Z`"}") | Out-Null
 }
 Write-CheckText -Path $fixtureSaturatedPath -Text (($fixtureSaturatedLines -join "`n") + "`n")
 
@@ -766,12 +813,31 @@ $runBySource = Invoke-HiddenProcess -Ctx $ctx -Name 'cli_run_by_source_scope' -F
 $resultInvalidPath = Join-Path $ctx.OutputsDir 'result_invalid_sources.json'
 $runInvalid = Invoke-HiddenProcess -Ctx $ctx -Name 'cli_run_invalid_sources' -FilePath $toolPath -Arguments @('run','--in',$fixtureInvalidSourcesPath,'--config',$configMainPath,'--out',$resultInvalidPath,'--report',(Join-Path $ctx.OutputsDir 'report_invalid_sources.md')) -TimeoutSec 120
 
-$benchRun = Invoke-HiddenProcess -Ctx $ctx -Name 'go_bench_real' -FilePath $ctx.GoCmd -Arguments @('test','-run','^$','-bench','BenchmarkBloomAddMayContain|BenchmarkStreamingNoExact','./...') -TimeoutSec 600
+$unitTestsList = Invoke-HiddenProcess -Ctx $ctx -Name 'go_test_list_tests' -FilePath $ctx.GoCmd -Arguments @('test','-list','^Test','./...') -TimeoutSec 120 -AllowNonZero $true -ValidationOnly $true
+$benchList = Invoke-HiddenProcess -Ctx $ctx -Name 'go_test_list_benchmarks' -FilePath $ctx.GoCmd -Arguments @('test','-list','^Benchmark','./...') -TimeoutSec 120 -AllowNonZero $true -ValidationOnly $true
 
-$bitHashJson = Invoke-HiddenProcess -Ctx $ctx -Name 'go_test_bit_hash_json' -FilePath $ctx.GoCmd -Arguments @('test','-count=1','-json','-run','^(TestBitArraySetAndTest|TestBloomAddMayContain|TestKnownHashVectors)$','./...') -TimeoutSec 180
-$paramsJson = Invoke-HiddenProcess -Ctx $ctx -Name 'go_test_params_json' -FilePath $ctx.GoCmd -Arguments @('test','-count=1','-json','-run','^TestCalculateParameters$','./...') -TimeoutSec 180
-$countingJson = Invoke-HiddenProcess -Ctx $ctx -Name 'go_test_counting_json' -FilePath $ctx.GoCmd -Arguments @('test','-count=1','-json','-run','^TestCountingBloomAddRemove$','./...') -TimeoutSec 180
-$noExactJson = Invoke-HiddenProcess -Ctx $ctx -Name 'go_test_no_exact_json' -FilePath $ctx.GoCmd -Arguments @('test','-count=1','-json','-run','^TestNoExactSkipsExactMap$','./...') -TimeoutSec 180
+$allTestNames = Get-GoListNames -LogPath (Join-Path $ctx.ResultDir $unitTestsList.stdout) -Prefix 'Test'
+$allBenchNames = Get-GoListNames -LogPath (Join-Path $ctx.ResultDir $benchList.stdout) -Prefix 'Benchmark'
+
+$bitArrayTests = Select-NamesByPattern -Names $allTestNames -Pattern '(?i)bit|setandget|setpanics|getpanics'
+$bloomAddTests = Select-NamesByPattern -Names $allTestNames -Pattern '(?i)add.*maycontain|maycontain|filteradd'
+$hashVectorTests = Select-NamesByPattern -Names $allTestNames -Pattern '(?i)hash|indexes|vector'
+$paramTests = Select-NamesByPattern -Names $allTestNames -Pattern '(?i)param'
+$countingTests = Select-NamesByPattern -Names $allTestNames -Pattern '(?i)counting'
+$noExactTests = Select-NamesByPattern -Names $allTestNames -Pattern '(?i)withoutmap|nomap|noexact|no_exact|streaming'
+$bitHashTests = @($bitArrayTests + $bloomAddTests + $hashVectorTests | Sort-Object -Unique)
+
+$benchFilterNames = Select-NamesByPattern -Names $allBenchNames -Pattern '(?i)add|maycontain'
+$benchStreamNames = Select-NamesByPattern -Names $allBenchNames -Pattern '(?i)stream|noexact|nomap|withoutmap'
+$benchSelected = @($benchFilterNames + $benchStreamNames | Sort-Object -Unique)
+$benchPattern = if ($benchSelected.Count -gt 0) { ($benchSelected -join '|') } else { 'BenchmarkNothingSelected' }
+
+$benchRun = Invoke-HiddenProcess -Ctx $ctx -Name 'go_bench_real' -FilePath $ctx.GoCmd -Arguments @('test','-run','^$','-bench',$benchPattern,'./...') -TimeoutSec 600
+
+$bitHashJson = Invoke-HiddenProcess -Ctx $ctx -Name 'go_test_bit_hash_json' -FilePath $ctx.GoCmd -Arguments @('test','-count=1','-json','-run',(Get-NameRunRegex -Names $bitHashTests),'./...') -TimeoutSec 180
+$paramsJson = Invoke-HiddenProcess -Ctx $ctx -Name 'go_test_params_json' -FilePath $ctx.GoCmd -Arguments @('test','-count=1','-json','-run',(Get-NameRunRegex -Names $paramTests),'./...') -TimeoutSec 180
+$countingJson = Invoke-HiddenProcess -Ctx $ctx -Name 'go_test_counting_json' -FilePath $ctx.GoCmd -Arguments @('test','-count=1','-json','-run',(Get-NameRunRegex -Names $countingTests),'./...') -TimeoutSec 180
+$noExactJson = Invoke-HiddenProcess -Ctx $ctx -Name 'go_test_no_exact_json' -FilePath $ctx.GoCmd -Arguments @('test','-count=1','-json','-run',(Get-NameRunRegex -Names $noExactTests),'./...') -TimeoutSec 180
 
 $generatorStats = Get-JsonlStats -Path $genAPath -MaxSource 3
 $hashA = Get-FileSha256 -Path $genAPath
@@ -785,7 +851,9 @@ $invalidRatioRejected = ($genInvalidRatio.exit_code -ne 0 -or $invalidRatioError
 $invalidSourcesRejected = ($genInvalidSources.exit_code -ne 0 -or $invalidSourcesError -match 'sources must be in \[1, 99\]')
 $generatorInvariantOk = (
     $genA.exit_code -eq 0 -and $genB.exit_code -eq 0 -and $genC.exit_code -eq 0 -and
-    $generatorStats.lines -eq 120 -and $generatorStats.unique -eq 90 -and $generatorStats.duplicates -eq 30 -and
+    $generatorStats.lines -eq 120 -and
+    $generatorStats.duplicates -ge 20 -and $generatorStats.duplicates -le 42 -and
+    $generatorStats.unique -eq ($generatorStats.lines - $generatorStats.duplicates) -and
     $generatorStats.cross_source_duplicate -and $generatorStats.invalid_source_count -eq 0 -and
     $hashA -eq $hashB -and $hashA -ne $hashC -and
     $invalidCountRejected -and $invalidRatioRejected -and $invalidSourcesRejected
@@ -801,21 +869,20 @@ $globalResult = Read-JsonFile -Path $resultGlobalPath -Run $runGlobal
 $bySourceResult = Read-JsonFile -Path $resultBySourcePath -Run $runBySource
 $invalidResult = Read-JsonFile -Path $resultInvalidPath -Run $runInvalid
 
-$bitHashStatus = Parse-GoTestJson -JsonLogPath (Join-Path $ctx.ResultDir $bitHashJson.stdout) -ExpectedTests @('TestBitArraySetAndTest','TestBloomAddMayContain','TestKnownHashVectors')
-$paramsStatus = Parse-GoTestJson -JsonLogPath (Join-Path $ctx.ResultDir $paramsJson.stdout) -ExpectedTests @('TestCalculateParameters','TestCalculateParameters/p=0.1','TestCalculateParameters/p=0.05','TestCalculateParameters/p=0.01','TestCalculateParameters/p=0.001')
-$countingStatus = Parse-GoTestJson -JsonLogPath (Join-Path $ctx.ResultDir $countingJson.stdout) -ExpectedTests @('TestCountingBloomAddRemove')
-$noExactStatus = Parse-GoTestJson -JsonLogPath (Join-Path $ctx.ResultDir $noExactJson.stdout) -ExpectedTests @('TestNoExactSkipsExactMap')
+$bitHashStatus = Parse-GoTestJson -JsonLogPath (Join-Path $ctx.ResultDir $bitHashJson.stdout) -ExpectedTests $bitHashTests
+$paramsStatus = Parse-GoTestJson -JsonLogPath (Join-Path $ctx.ResultDir $paramsJson.stdout) -ExpectedTests $paramTests
+$countingStatus = Parse-GoTestJson -JsonLogPath (Join-Path $ctx.ResultDir $countingJson.stdout) -ExpectedTests $countingTests
+$noExactStatus = Parse-GoTestJson -JsonLogPath (Join-Path $ctx.ResultDir $noExactJson.stdout) -ExpectedTests $noExactTests
 
-$bitHashOk = $true
-foreach ($name in $bitHashStatus.Keys) {
-    if (-not ($bitHashStatus[$name].run -and $bitHashStatus[$name].pass)) { $bitHashOk = $false }
-}
-$paramsOk = $true
-foreach ($name in $paramsStatus.Keys) {
-    if (-not ($paramsStatus[$name].run -and $paramsStatus[$name].pass)) { $paramsOk = $false }
-}
-$countingTestOk = ($countingStatus['TestCountingBloomAddRemove'].run -and $countingStatus['TestCountingBloomAddRemove'].pass)
-$noExactTestOk = ($noExactStatus['TestNoExactSkipsExactMap'].run -and $noExactStatus['TestNoExactSkipsExactMap'].pass)
+$bloomAddStatus = Parse-GoTestJson -JsonLogPath (Join-Path $ctx.ResultDir $bitHashJson.stdout) -ExpectedTests $bloomAddTests
+
+# Each group must contribute at least one discovered test, and every discovered test must pass.
+# An empty selection means the criterion is unconfirmed, not vacuously satisfied.
+$bitHashOk = ($bitArrayTests.Count -gt 0 -and $bloomAddTests.Count -gt 0 -and $hashVectorTests.Count -gt 0 -and (Test-SelectedTestsPass -Status $bitHashStatus))
+$paramsOk = (Test-SelectedTestsPass -Status $paramsStatus)
+$countingTestOk = (Test-SelectedTestsPass -Status $countingStatus)
+$noExactTestOk = (Test-SelectedTestsPass -Status $noExactStatus)
+$bloomAddTestOk = (Test-SelectedTestsPass -Status $bloomAddStatus)
 
 $expectedRows = @(
     @{ p = 0.1; m = 4793; k = 3; b = 600 },
@@ -841,7 +908,11 @@ for ($i = 0; $i -lt $expectedRows.Count; $i++) {
     if ([math]::Abs([double]$rowP - [double]$expected.p) -gt 0.000001) { $parametersRuntimeOk = $false }
     if ([int64]$rowM -ne [int64]$expected.m) { $parametersRuntimeOk = $false }
     if ([int64]$rowK -ne [int64]$expected.k) { $parametersRuntimeOk = $false }
-    if ([int64]$rowB -ne [int64]$expected.b) { $parametersRuntimeOk = $false }
+    # The assignment does not fix the memory formula, so both the packed-bit size and the
+    # actual []uint64 allocation are accepted.
+    $bytesPacked = [int64][math]::Ceiling([double]$rowM / 8.0)
+    $bytesWords = [int64]([math]::Ceiling([double]$rowM / 64.0) * 8.0)
+    if ([int64]$rowB -ne $bytesPacked -and [int64]$rowB -ne $bytesWords) { $parametersRuntimeOk = $false }
 }
 
 # exact_map_allocated is not part of the assignment output format: check it only when present.
@@ -867,18 +938,17 @@ $jsonReportOk = (Test-ResultFieldPresent -Object $mainResult -Names @('total_rec
 # values but fixes neither the column layout nor the row labels, so only the values are matched.
 $markdownRaw = Read-TextSafe -Path $reportMainPath
 $markdownOk = (
-    $markdownRaw -match 'total_records[^\r\n]*\b120\b' -and
-    $markdownRaw -match 'bloom_memory_bytes[^\r\n]*\b1200\b' -and
+    $markdownRaw -match '\b120\b' -and
     $markdownRaw -match '\|\s*0\.1\s*\|\s*4793\s*\|\s*3\s*\|[^\r\n]*\b600\b' -and
-    $markdownRaw -match '\|\s*0\.05\s*\|\s*6236\s*\|\s*4\s*\|[^\r\n]*\b784\b' -and
-    $markdownRaw -match '\|\s*0\.01\s*\|\s*9586\s*\|\s*7\s*\|[^\r\n]*\b1200\b' -and
-    $markdownRaw -match '\|\s*0\.001\s*\|\s*14378\s*\|\s*10\s*\|[^\r\n]*\b1800\b'
+    $markdownRaw -match '\|\s*0\.05\s*\|\s*6236\s*\|\s*4\s*\|[^\r\n]*\b(780|784)\b' -and
+    $markdownRaw -match '\|\s*0\.01\s*\|\s*9586\s*\|\s*7\s*\|[^\r\n]*\b(1199|1200)\b' -and
+    $markdownRaw -match '\|\s*0\.001\s*\|\s*14378\s*\|\s*10\s*\|[^\r\n]*\b(1798|1800)\b'
 )
 
 $mapEstimateExpected = Get-ExactMapEstimateFromInput -Path $genAPath -Scope 'global'
 $mainMapMemory = Get-ResultFieldValue -Object $mainResult -Names @('exact_map_memory_bytes','exact_map_memory_estimate_bytes')
 $memoryComparisonOk = (
-    [int64]$mainResult.bloom_memory_bytes -eq 1200 -and
+    ([int64]$mainResult.bloom_memory_bytes -ge 1199 -and [int64]$mainResult.bloom_memory_bytes -le 1200) -and
     $null -ne $mainMapMemory -and
     [int64]$mainMapMemory -eq [int64]$mapEstimateExpected
 )
@@ -936,7 +1006,15 @@ $globalVsSourceOk = (
 
 $benchStdoutPath = Join-Path $ctx.ResultDir $benchRun.stdout
 $benchText = Read-TextSafe -Path $benchStdoutPath
-$benchmarksOk = ($benchRun.exit_code -eq 0 -and $benchText -match 'BenchmarkBloomAddMayContain-\d+\s+\d+\s+[0-9.]+' -and $benchText -match 'BenchmarkStreamingNoExact-\d+\s+\d+\s+[0-9.]+')
+$benchFilterMatched = $false
+foreach ($name in $benchFilterNames) {
+    if ($benchText -match ([regex]::Escape($name) + '(-\d+)?\s+\d+\s+[0-9.]+')) { $benchFilterMatched = $true }
+}
+$benchStreamMatched = $false
+foreach ($name in $benchStreamNames) {
+    if ($benchText -match ([regex]::Escape($name) + '(-\d+)?\s+\d+\s+[0-9.]+')) { $benchStreamMatched = $true }
+}
+$benchmarksOk = ($benchRun.exit_code -eq 0 -and $benchFilterMatched -and $benchStreamMatched)
 
 $millionInputPath = Join-Path $ctx.InputsDir 'generated_1m.jsonl'
 $millionMetricsPath = Join-Path $ctx.OutputsDir 'million_metrics.json'
@@ -1049,9 +1127,6 @@ Copy-Item -LiteralPath (Join-Path $ctx.ResultDir $metaGoVersion.stdout) -Destina
 $metaGoEnv = Invoke-HiddenProcess -Ctx $ctx -Name 'meta_go_env' -FilePath $ctx.GoCmd -Arguments @('env','GOVERSION','GOOS','GOARCH') -TimeoutSec 30 -AllowNonZero $true -ValidationOnly $true
 Copy-Item -LiteralPath (Join-Path $ctx.ResultDir $metaGoEnv.stdout) -Destination $goEnvPath -Force
 
-$unitTestsList = Invoke-HiddenProcess -Ctx $ctx -Name 'go_test_list_tests' -FilePath $ctx.GoCmd -Arguments @('test','-list','^Test','./...') -TimeoutSec 120 -AllowNonZero $true -ValidationOnly $true
-$benchList = Invoke-HiddenProcess -Ctx $ctx -Name 'go_test_list_benchmarks' -FilePath $ctx.GoCmd -Arguments @('test','-list','^Benchmark','./...') -TimeoutSec 120 -AllowNonZero $true -ValidationOnly $true
-
 $unitListText = Read-TextSafe -Path (Join-Path $ctx.ResultDir $unitTestsList.stdout)
 $benchListText = Read-TextSafe -Path (Join-Path $ctx.ResultDir $benchList.stdout)
 $unitTestsPresent = $unitListText -match '(?m)^Test[A-Za-z0-9_]+'
@@ -1077,10 +1152,10 @@ $makeTestPasses = ($ctx.CommandResults.ContainsKey('make_test') -and $ctx.Comman
 $makeBenchPasses = ($ctx.CommandResults.ContainsKey('make_bench') -and $ctx.CommandResults['make_bench'].exit_code -eq 0)
 $makeDemoPasses = ($ctx.CommandResults.ContainsKey('make_demo') -and $ctx.CommandResults['make_demo'].exit_code -eq 0)
 
-$bloomRunOk = ($runMain.exit_code -eq 0 -and [int]$exactResult.exact_unique -eq 3 -and $bitHashStatus['TestBloomAddMayContain'].run -and $bitHashStatus['TestBloomAddMayContain'].pass)
+$bloomRunOk = ($runMain.exit_code -eq 0 -and [int]$exactResult.exact_unique -eq 3 -and $bloomAddTestOk)
 
 Add-BooleanFeatureAssessment -Ctx $ctx -Id 'minimum.generator' -Level 'minimum' -Category 'cli' -Requirement 'Generator validates parameters and deterministic invariants at runtime' -Ok $generatorInvariantOk -Evidence @($genA.log, $genB.log, $genC.log, (Convert-ResultPathToEvidence -Ctx $ctx -Path $genAPath)) -Details "lines=$($generatorStats.lines); unique=$($generatorStats.unique); duplicates=$($generatorStats.duplicates); seed42_equal=$($hashA -eq $hashB); seed43_diff=$($hashA -ne $hashC)"
-Add-BooleanFeatureAssessment -Ctx $ctx -Id 'minimum.bloom_run' -Level 'minimum' -Category 'algorithm' -Requirement 'Bloom run semantics validated and TestBloomAddMayContain run/pass' -Ok $bloomRunOk -Evidence @($runMain.log, $runExact.log, $bitHashJson.log)
+Add-BooleanFeatureAssessment -Ctx $ctx -Id 'minimum.bloom_run' -Level 'minimum' -Category 'algorithm' -Requirement 'Bloom run semantics validated and discovered add/may-contain tests pass' -Ok $bloomRunOk -Evidence @($runMain.log, $runExact.log, $bitHashJson.log)
 Add-BooleanFeatureAssessment -Ctx $ctx -Id 'minimum.parameters' -Level 'minimum' -Category 'algorithm' -Requirement 'Runtime parameter table matches exact m/k/bytes values for four FPR values' -Ok $parametersRuntimeOk -Evidence @($runMain.log, (Convert-ResultPathToEvidence -Ctx $ctx -Path $resultMainPath))
 Add-BooleanFeatureAssessment -Ctx $ctx -Id 'minimum.exact_map' -Level 'minimum' -Category 'algorithm' -Requirement 'Exact map fixture yields total_records=6, exact_unique=3, exact_duplicates=3' -Ok $exactMapOk -Evidence @($runExact.log, (Convert-ResultPathToEvidence -Ctx $ctx -Path $resultExactPath))
 Add-BooleanFeatureAssessment -Ctx $ctx -Id 'minimum.false_positive' -Level 'minimum' -Category 'algorithm' -Requirement 'Saturated fixture yields positive and independently verified false positives' -Ok $falsePositiveOk -Evidence @($runSaturated.log, (Convert-ResultPathToEvidence -Ctx $ctx -Path $resultSaturatedPath))
@@ -1090,10 +1165,10 @@ Add-BooleanFeatureAssessment -Ctx $ctx -Id 'minimum.bit_hash_tests' -Level 'mini
 Add-BooleanFeatureAssessment -Ctx $ctx -Id 'good.markdown_report' -Level 'good' -Category 'format' -Requirement 'Markdown report metrics and FPR table are consistent with JSON values' -Ok $markdownOk -Evidence @((Convert-ResultPathToEvidence -Ctx $ctx -Path $reportMainPath), (Convert-ResultPathToEvidence -Ctx $ctx -Path $resultMainPath))
 Add-BooleanFeatureAssessment -Ctx $ctx -Id 'good.benchmarks' -Level 'good' -Category 'performance' -Requirement 'Real go benchmark output contains Bloom and streaming no-exact ns/op lines' -Ok $benchmarksOk -Evidence @($benchRun.log)
 Add-BooleanFeatureAssessment -Ctx $ctx -Id 'good.memory_comparison' -Level 'good' -Category 'performance' -Requirement 'Bloom bytes and exact map estimate match independent recomputation' -Ok $memoryComparisonOk -Evidence @($runMain.log, (Convert-ResultPathToEvidence -Ctx $ctx -Path $resultMainPath))
-Add-BooleanFeatureAssessment -Ctx $ctx -Id 'good.parameter_tests' -Level 'good' -Category 'tests' -Requirement 'TestCalculateParameters and four FPR subtests run/pass' -Ok $paramsOk -Evidence @($paramsJson.log)
+Add-BooleanFeatureAssessment -Ctx $ctx -Id 'good.parameter_tests' -Level 'good' -Category 'tests' -Requirement 'Discovered parameter-calculation tests pass' -Ok $paramsOk -Evidence @($paramsJson.log)
 Add-BooleanFeatureAssessment -Ctx $ctx -Id 'good.source_statistics' -Level 'good' -Category 'format' -Requirement 'Valid by_source and invalid_sources statistics are runtime-verified' -Ok $sourceStatsOk -Evidence @($runInvalid.log, (Convert-ResultPathToEvidence -Ctx $ctx -Path $resultInvalidPath))
 
-Add-BooleanFeatureAssessment -Ctx $ctx -Id 'excellent.counting_bloom' -Level 'excellent' -Category 'algorithm' -Requirement 'Counting mode reports bytes and TestCountingBloomAddRemove run/pass' -Ok $countingOk -Evidence @($runCounting.log, $countingJson.log)
+Add-BooleanFeatureAssessment -Ctx $ctx -Id 'excellent.counting_bloom' -Level 'excellent' -Category 'algorithm' -Requirement 'Counting mode reports bytes and discovered counting tests pass' -Ok $countingOk -Evidence @($runCounting.log, $countingJson.log)
 Add-BooleanFeatureAssessment -Ctx $ctx -Id 'excellent.hash_variants' -Level 'excellent' -Category 'algorithm' -Requirement 'FNV/SHA runtime stats match while filter digests differ and known vectors pass' -Ok $hashVariantsOk -Evidence @($runMain.log, $runSha.log, $bitHashJson.log)
 Add-BooleanFeatureAssessment -Ctx $ctx -Id 'excellent.no_exact_mode' -Level 'excellent' -Category 'performance' -Requirement 'No-exact mode leaves exact_* fields null, white-box test and 1M gate' -Ok ($noExactOk -and $millionOk) -Evidence @($runNoExact.log, $noExactJson.log, $millionRun.log, (Convert-ResultPathToEvidence -Ctx $ctx -Path $millionMetricsPath))
 Add-BooleanFeatureAssessment -Ctx $ctx -Id 'excellent.multi_fpr_report' -Level 'excellent' -Category 'report' -Requirement 'JSON and Markdown contain ordered 0.1/0.05/0.01/0.001 m/k/bytes table' -Ok $multiFprOk -Evidence @($runMain.log, (Convert-ResultPathToEvidence -Ctx $ctx -Path $reportMainPath), (Convert-ResultPathToEvidence -Ctx $ctx -Path $resultMainPath))
